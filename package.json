@@ -1,0 +1,13 @@
+{
+  "name": "anime-nexus-api",
+  "version": "1.0.0",
+  "description": "Anime scraper API with cinematic UI",
+  "private": true,
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "devDependencies": {
+    "vercel": "^33.0.0"
+  }
+}

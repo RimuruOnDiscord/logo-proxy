@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AniNexus — Anime Lookup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #080a0f;
+      --surface: #0d1018;
+      --surface2: #131720;
+      --border: rgba(255,255,255,0.06);
+      --accent: #e8c46a;
+      --accent2: #c4795a;
+      --text: #e8e8f0;
+      --muted: #5a5f72;
+      --red: #e05c5c;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-weight: 300;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── NOISE GRAIN ── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 9999;
+      opacity: 0.4;
+    }
+
+    /* ── AMBIENT GLOW ── */
+    .ambient {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(120px);
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0;
+      transition: opacity 2s ease;
+    }
+    .ambient.show { opacity: 1; }
+    .ambient-1 {
+      width: 600px; height: 600px;
+      background: radial-gradient(circle, rgba(232,196,106,0.06), transparent 70%);
+      top: -200px; left: -100px;
+      animation: drift1 20s ease-in-out infinite alternate;
+    }
+    .ambient-2 {
+      width: 500px; height: 500px;
+      background: radial-gradient(circle, rgba(196,121,90,0.05), transparent 70%);
+      bottom: -100px; right: -100px;
+      animation: drift2 25s ease-in-out infinite alternate;
+    }
+
+    @keyframes drift1 { from { transform: translate(0,0); } to { transform: translate(80px, 60px); } }
+    @keyframes drift2 { from { transform: translate(0,0); } to { transform: translate(-60px, -80px); } }
+
+    /* ── LAYOUT ── */
+    .page {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 0 1.5rem 6rem;
+    }
+
+    /* ── HEADER ── */
+    header {
+      width: 100%;
+      max-width: 900px;
+      padding: 3.5rem 0 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      opacity: 0;
+      transform: translateY(-20px);
+      animation: fadeUp 0.8s cubic-bezier(.22,1,.36,1) 0.1s forwards;
+    }
+
+    .logo-mark {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .logo-mark svg { width: 28px; height: 28px; }
+    .logo-text {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.3rem;
+      letter-spacing: 0.12em;
+      color: var(--accent);
+    }
+
+    h1 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: clamp(3.5rem, 10vw, 7rem);
+      letter-spacing: 0.02em;
+      line-height: 0.9;
+      background: linear-gradient(135deg, #ffffff 0%, #b0b8cc 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .tagline {
+      margin-top: 0.8rem;
+      font-size: 0.9rem;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    /* ── SEARCH ── */
+    .search-wrap {
+      width: 100%;
+      max-width: 640px;
+      margin: 3rem 0 0;
+      opacity: 0;
+      transform: translateY(20px);
+      animation: fadeUp 0.8s cubic-bezier(.22,1,.36,1) 0.3s forwards;
+    }
+
+    .search-box {
+      position: relative;
+      display: flex;
+      align-items: center;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      transition: border-color 0.3s, box-shadow 0.3s;
+    }
+    .search-box:focus-within {
+      border-color: rgba(232,196,106,0.4);
+      box-shadow: 0 0 0 3px rgba(232,196,106,0.07), 0 8px 40px rgba(0,0,0,0.4);
+    }
+
+    .search-icon {
+      padding: 0 1rem 0 1.25rem;
+      color: var(--muted);
+      flex-shrink: 0;
+      transition: color 0.3s;
+    }
+    .search-box:focus-within .search-icon { color: var(--accent); }
+
+    #searchInput {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 1rem;
+      font-weight: 300;
+      padding: 1rem 0;
+      caret-color: var(--accent);
+    }
+    #searchInput::placeholder { color: var(--muted); }
+
+    #searchBtn {
+      background: var(--accent);
+      color: #1a1400;
+      border: none;
+      padding: 0 1.5rem;
+      height: 100%;
+      min-height: 54px;
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1rem;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+      flex-shrink: 0;
+    }
+    #searchBtn:hover { background: #f0cf7a; }
+    #searchBtn:active { transform: scale(0.97); }
+    #searchBtn:disabled { background: #3a3520; color: #6a5f30; cursor: not-allowed; }
+
+    /* ── LOADING ── */
+    .loader {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 1rem;
+      margin-top: 5rem;
+      opacity: 0;
+      animation: fadeIn 0.4s ease forwards;
+    }
+    .loader.show { display: flex; }
+
+    .film-strip {
+      display: flex;
+      gap: 4px;
+    }
+    .film-strip span {
+      width: 8px;
+      height: 32px;
+      background: var(--surface2);
+      border-radius: 2px;
+      animation: filmPulse 1.2s ease-in-out infinite;
+    }
+    .film-strip span:nth-child(1) { animation-delay: 0s; }
+    .film-strip span:nth-child(2) { animation-delay: 0.15s; }
+    .film-strip span:nth-child(3) { animation-delay: 0.3s; }
+    .film-strip span:nth-child(4) { animation-delay: 0.45s; }
+    .film-strip span:nth-child(5) { animation-delay: 0.6s; }
+
+    @keyframes filmPulse {
+      0%, 100% { background: var(--surface2); transform: scaleY(1); }
+      50% { background: var(--accent); transform: scaleY(1.5); }
+    }
+
+    .loader-text {
+      font-size: 0.8rem;
+      color: var(--muted);
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+    }
+
+    /* ── ERROR ── */
+    .error-box {
+      display: none;
+      margin-top: 3rem;
+      padding: 1.25rem 1.5rem;
+      background: rgba(224,92,92,0.08);
+      border: 1px solid rgba(224,92,92,0.2);
+      border-radius: 6px;
+      color: var(--red);
+      font-size: 0.9rem;
+      max-width: 640px;
+      width: 100%;
+      opacity: 0;
+      animation: fadeIn 0.4s ease forwards;
+    }
+    .error-box.show { display: block; }
+
+    /* ── RESULT CARD ── */
+    #result {
+      display: none;
+      width: 100%;
+      max-width: 900px;
+      margin-top: 4rem;
+    }
+    #result.show { display: block; }
+
+    /* Hero */
+    .hero-card {
+      position: relative;
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      opacity: 0;
+      transform: translateY(30px);
+      transition: opacity 0.7s cubic-bezier(.22,1,.36,1), transform 0.7s cubic-bezier(.22,1,.36,1);
+    }
+    .hero-card.animate { opacity: 1; transform: translateY(0); }
+
+    .hero-inner {
+      display: flex;
+      gap: 0;
+      align-items: stretch;
+      min-height: 320px;
+    }
+
+    /* Poster */
+    .poster-col {
+      width: 200px;
+      flex-shrink: 0;
+      position: relative;
+      overflow: hidden;
+    }
+    .poster-img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      transition: transform 0.6s ease;
+    }
+    .hero-card:hover .poster-img { transform: scale(1.04); }
+    .poster-placeholder {
+      width: 100%;
+      height: 100%;
+      min-height: 320px;
+      background: linear-gradient(160deg, var(--surface2), #0a0d14);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+    }
+
+    /* Info */
+    .info-col {
+      flex: 1;
+      padding: 2rem 2rem 2rem 2.5rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .anime-logo-img {
+      max-width: 280px;
+      max-height: 90px;
+      object-fit: contain;
+      margin-bottom: 1rem;
+      filter: drop-shadow(0 2px 12px rgba(232,196,106,0.2));
+      opacity: 0;
+      transform: translateX(-10px);
+      transition: opacity 0.6s ease 0.3s, transform 0.6s ease 0.3s;
+    }
+    .hero-card.animate .anime-logo-img { opacity: 1; transform: translateX(0); }
+
+    .anime-title {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: clamp(2rem, 5vw, 3.2rem);
+      letter-spacing: 0.02em;
+      line-height: 1;
+      color: var(--text);
+    }
+
+    .anime-url {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin-top: 0.6rem;
+      font-size: 0.78rem;
+      color: var(--muted);
+      text-decoration: none;
+      letter-spacing: 0.04em;
+      transition: color 0.2s;
+    }
+    .anime-url:hover { color: var(--accent); }
+
+    .stat-row {
+      display: flex;
+      gap: 2rem;
+      margin-top: 1.5rem;
+    }
+    .stat { display: flex; flex-direction: column; gap: 0.2rem; }
+    .stat-label {
+      font-size: 0.7rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+    .stat-value {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.8rem;
+      color: var(--accent);
+      line-height: 1;
+    }
+
+    .actions {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-top: 2rem;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.6rem 1.2rem;
+      border-radius: 4px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.82rem;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+      transition: all 0.2s;
+      border: 1px solid transparent;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #1a1400;
+      border-color: var(--accent);
+    }
+    .btn-primary:hover { background: #f0cf7a; }
+    .btn-ghost {
+      background: transparent;
+      color: var(--text);
+      border-color: var(--border);
+    }
+    .btn-ghost:hover { border-color: rgba(255,255,255,0.2); background: var(--surface2); }
+    .btn:active { transform: scale(0.97); }
+
+    .btn-copied {
+      background: rgba(100,200,100,0.1) !important;
+      border-color: rgba(100,200,100,0.3) !important;
+      color: #7ddd7d !important;
+    }
+
+    /* Divider */
+    .section-divider {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-top: 3rem;
+      opacity: 0;
+      transform: translateY(10px);
+      transition: opacity 0.5s ease 0.4s, transform 0.5s ease 0.4s;
+    }
+    #result.show .section-divider { opacity: 1; transform: translateY(0); }
+    .divider-line { flex: 1; height: 1px; background: var(--border); }
+    .divider-label {
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      white-space: nowrap;
+    }
+
+    /* JSON Panel */
+    .json-panel {
+      margin-top: 1.5rem;
+      border-radius: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      overflow: hidden;
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 0.6s ease 0.5s, transform 0.6s ease 0.5s;
+    }
+    #result.show .json-panel { opacity: 1; transform: translateY(0); }
+
+    .json-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.9rem 1.25rem;
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+    }
+    .json-dots { display: flex; gap: 6px; }
+    .json-dots span {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+    }
+    .json-dots span:nth-child(1) { background: #e05c5c; }
+    .json-dots span:nth-child(2) { background: #e0a45c; }
+    .json-dots span:nth-child(3) { background: #5ce07a; }
+    .json-filename {
+      font-size: 0.75rem;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+    }
+    .json-actions { display: flex; gap: 0.5rem; }
+
+    .json-body {
+      max-height: 400px;
+      overflow-y: auto;
+      padding: 1.25rem 1.5rem;
+      scrollbar-width: thin;
+      scrollbar-color: var(--surface2) transparent;
+    }
+    .json-body::-webkit-scrollbar { width: 6px; }
+    .json-body::-webkit-scrollbar-track { background: transparent; }
+    .json-body::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 3px; }
+
+    pre {
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 0.78rem;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: #8899bb;
+    }
+
+    /* JSON Syntax */
+    .jk { color: #7da4d4; }   /* key */
+    .jv { color: #e8c46a; }   /* string value */
+    .jn { color: #d4a0ff; }   /* number */
+    .jb { color: #ff8b7a; }   /* bool/null */
+
+    /* ── ANIMATIONS ── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      margin-top: 5rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-align: center;
+      letter-spacing: 0.06em;
+      opacity: 0;
+      animation: fadeIn 1s ease 1.2s forwards;
+    }
+    footer a { color: var(--muted); text-decoration: none; }
+    footer a:hover { color: var(--accent); }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 600px) {
+      .hero-inner { flex-direction: column; }
+      .poster-col { width: 100%; height: 240px; }
+      .poster-img { object-position: center top; }
+      .info-col { padding: 1.5rem; }
+      .stat-row { gap: 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="ambient ambient-1"></div>
+  <div class="ambient ambient-2"></div>
+
+  <div class="page">
+    <header>
+      <div class="logo-mark">
+        <svg viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="28" height="28" rx="6" fill="#e8c46a" fill-opacity="0.12"/>
+          <path d="M7 20L14 8L21 20" stroke="#e8c46a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M9.5 16H18.5" stroke="#e8c46a" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <span class="logo-text">AniNexus</span>
+      </div>
+      <h1>ANIME<br>LOOKUP</h1>
+      <p class="tagline">Search · Discover · Export</p>
+    </header>
+
+    <div class="search-wrap">
+      <div class="search-box">
+        <span class="search-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+          </svg>
+        </span>
+        <input id="searchInput" type="text" placeholder="Search anime — e.g. Fire Force, Bleach…" autocomplete="off" />
+        <button id="searchBtn">Search</button>
+      </div>
+    </div>
+
+    <!-- Loader -->
+    <div class="loader" id="loader">
+      <div class="film-strip">
+        <span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <p class="loader-text" id="loaderText">Searching the archive…</p>
+    </div>
+
+    <!-- Error -->
+    <div class="error-box" id="errorBox"></div>
+
+    <!-- Result -->
+    <div id="result">
+      <!-- Hero Card -->
+      <div class="hero-card" id="heroCard">
+        <div class="hero-inner">
+          <div class="poster-col" id="posterCol">
+            <div class="poster-placeholder" id="posterPlaceholder">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3">
+                <rect x="2" y="2" width="20" height="20" rx="2"/><path d="m9 9 6 6m0-6-6 6"/>
+              </svg>
+            </div>
+          </div>
+          <div class="info-col">
+            <div>
+              <img class="anime-logo-img" id="animeLogoImg" src="" alt="" style="display:none;" />
+              <h2 class="anime-title" id="animeTitle">—</h2>
+              <a class="anime-url" id="animeUrl" href="#" target="_blank" rel="noopener">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                  <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+                </svg>
+                <span id="animeUrlText">anime.nexus</span>
+              </a>
+            </div>
+            <div>
+              <div class="stat-row">
+                <div class="stat">
+                  <span class="stat-label">Episodes</span>
+                  <span class="stat-value" id="statEpisodes">0</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">Source</span>
+                  <span class="stat-value" style="font-size:1rem; color: var(--muted); font-family:'DM Sans',sans-serif; font-weight:300; padding-top:4px;">anime.nexus</span>
+                </div>
+              </div>
+              <div class="actions">
+                <button class="btn btn-primary" id="copyJsonBtn" onclick="copyJSON()">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                  </svg>
+                  Copy JSON
+                </button>
+                <button class="btn btn-ghost" id="downloadJsonBtn" onclick="downloadJSON()">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                  Download
+                </button>
+                <a class="btn btn-ghost" id="openApiBtn" href="#" target="_blank" rel="noopener">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+                  </svg>
+                  Raw API
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section Divider -->
+      <div class="section-divider">
+        <div class="divider-line"></div>
+        <span class="divider-label">Response Data</span>
+        <div class="divider-line"></div>
+      </div>
+
+      <!-- JSON Panel -->
+      <div class="json-panel">
+        <div class="json-header">
+          <div class="json-dots">
+            <span></span><span></span><span></span>
+          </div>
+          <span class="json-filename" id="jsonFilename">response.json</span>
+          <div class="json-actions">
+            <button class="btn btn-ghost" style="padding:0.3rem 0.8rem; font-size:0.75rem;" onclick="copyJSON()">Copy</button>
+          </div>
+        </div>
+        <div class="json-body">
+          <pre id="jsonOutput">// Search for an anime to see results here</pre>
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      <p>Powered by <a href="https://anime.nexus" target="_blank">anime.nexus</a> &nbsp;·&nbsp; Built with AniNexus API</p>
+    </footer>
+  </div>
+
+  <script>
+    // ── State ──
+    let currentData = null;
+    let currentQuery = '';
+
+    // ── DOM refs ──
+    const input = document.getElementById('searchInput');
+    const btn = document.getElementById('searchBtn');
+    const loader = document.getElementById('loader');
+    const loaderText = document.getElementById('loaderText');
+    const errorBox = document.getElementById('errorBox');
+    const result = document.getElementById('result');
+    const heroCard = document.getElementById('heroCard');
+
+    // ── Animate ambients in ──
+    setTimeout(() => {
+      document.querySelectorAll('.ambient').forEach(el => el.classList.add('show'));
+    }, 300);
+
+    // ── Keyboard ──
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+
+    // ── Search ──
+    async function search() {
+      const q = input.value.trim();
+      if (!q) { input.focus(); return; }
+
+      currentQuery = q;
+      setLoading(true);
+      hideAll();
+
+      const loadingMessages = [
+        'Searching the archive…',
+        'Fetching episode data…',
+        'Extracting artwork…',
+        'Almost there…',
+      ];
+      let msgIdx = 0;
+      const msgInterval = setInterval(() => {
+        msgIdx = (msgIdx + 1) % loadingMessages.length;
+        loaderText.textContent = loadingMessages[msgIdx];
+      }, 1800);
+
+      try {
+        const res = await fetch(`/api/anime?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        clearInterval(msgInterval);
+
+        if (!data.success) {
+          showError(data.error || 'No results found.');
+        } else {
+          currentData = data;
+          renderResult(data);
+        }
+      } catch (err) {
+        clearInterval(msgInterval);
+        showError('Network error — check your connection and try again.');
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function setLoading(on) {
+      btn.disabled = on;
+      btn.textContent = on ? '…' : 'Search';
+      loader.classList.toggle('show', on);
+    }
+
+    function hideAll() {
+      errorBox.classList.remove('show');
+      result.classList.remove('show');
+      heroCard.classList.remove('animate');
+    }
+
+    function showError(msg) {
+      errorBox.textContent = `⚠ ${msg}`;
+      errorBox.classList.add('show');
+    }
+
+    function renderResult(data) {
+      // Title
+      document.getElementById('animeTitle').textContent = data.anime.name;
+
+      // URL
+      const urlEl = document.getElementById('animeUrl');
+      urlEl.href = data.anime.url;
+      document.getElementById('animeUrlText').textContent = data.anime.url.replace('https://', '');
+
+      // Stats
+      document.getElementById('statEpisodes').textContent = data.total_episodes_found;
+
+      // Poster
+      const posterCol = document.getElementById('posterCol');
+      const placeholder = document.getElementById('posterPlaceholder');
+      if (data.art.poster) {
+        const img = document.createElement('img');
+        img.className = 'poster-img';
+        img.src = data.art.poster;
+        img.alt = data.anime.name + ' poster';
+        img.onerror = () => img.remove();
+        placeholder.style.display = 'none';
+        posterCol.appendChild(img);
+      }
+
+      // Logo
+      const logoImg = document.getElementById('animeLogoImg');
+      if (data.art.logo) {
+        logoImg.src = data.art.logo;
+        logoImg.style.display = 'block';
+        logoImg.onerror = () => { logoImg.style.display = 'none'; };
+      } else {
+        logoImg.style.display = 'none';
+      }
+
+      // Raw API link
+      document.getElementById('openApiBtn').href = `/api/anime?q=${encodeURIComponent(currentQuery)}`;
+
+      // JSON filename
+      document.getElementById('jsonFilename').textContent = `${data.anime.slug || 'response'}.json`;
+
+      // JSON output
+      document.getElementById('jsonOutput').innerHTML = syntaxHighlight(JSON.stringify(data, null, 2));
+
+      // Show & animate
+      result.classList.add('show');
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          heroCard.classList.add('animate');
+        });
+      });
+
+      // Scroll to result
+      setTimeout(() => result.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+    }
+
+    // ── Syntax highlight ──
+    function syntaxHighlight(json) {
+      return json
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, match => {
+          if (/^"/.test(match)) {
+            if (/:$/.test(match)) return `<span class="jk">${match}</span>`;
+            return `<span class="jv">${match}</span>`;
+          }
+          if (/true|false|null/.test(match)) return `<span class="jb">${match}</span>`;
+          return `<span class="jn">${match}</span>`;
+        });
+    }
+
+    // ── Copy JSON ──
+    function copyJSON() {
+      if (!currentData) return;
+      navigator.clipboard.writeText(JSON.stringify(currentData, null, 2)).then(() => {
+        const copyBtn = document.getElementById('copyJsonBtn');
+        const original = copyBtn.innerHTML;
+        copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Copied!`;
+        copyBtn.classList.add('btn-copied');
+        setTimeout(() => {
+          copyBtn.innerHTML = original;
+          copyBtn.classList.remove('btn-copied');
+        }, 2000);
+      });
+    }
+
+    // ── Download JSON ──
+    function downloadJSON() {
+      if (!currentData) return;
+      const blob = new Blob([JSON.stringify(currentData, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${currentData.anime.slug || 'anime'}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  </script>
+</body>
+</html>
