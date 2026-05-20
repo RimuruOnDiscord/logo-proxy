@@ -9,7 +9,6 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-  // Accepts 'q' (Show name) and an optional 'ep' (Episode number)
   const { q, ep } = req.query; 
   if (!q || !q.trim()) {
     return res.status(400).json({ success: false, error: 'Missing search query. Use ?q=your+anime' });
@@ -24,12 +23,15 @@ export default async function handler(req, res) {
 }
 
 async function scrapeAnime(searchQuery, targetEp) {
+  // Added 'Referer' header. Anime Nexus often blocks stream fetches without it!
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json',
+    'Referer': 'https://anime.nexus/', 
+    'Origin': 'https://anime.nexus'
   };
 
-  // STEP 1: Search for the anime
+  // STEP 1: Search for the anime show
   const searchApiUrl = `https://api.anime.nexus/api/anime/shows?search=${encodeURIComponent(searchQuery)}&sortBy=name+asc&page=1&includes[]=poster`;
   const searchRes = await fetch(searchApiUrl, { headers });
   if (!searchRes.ok) throw new Error(`Search API responded with ${searchRes.status}`);
@@ -37,14 +39,12 @@ async function scrapeAnime(searchQuery, targetEp) {
   
   let firstResult = searchData?.data?.[0];
 
-  // Try to find an exact title match first so you don't get spin-offs by accident
+  // Try to find an exact title match first
   if (searchData?.data?.length > 0) {
     const exactMatch = searchData.data.find(
       (show) => show.name.toLowerCase() === searchQuery.toLowerCase()
     );
-    if (exactMatch) {
-      firstResult = exactMatch;
-    }
+    if (exactMatch) firstResult = exactMatch;
   }
 
   if (!firstResult) {
@@ -52,10 +52,44 @@ async function scrapeAnime(searchQuery, targetEp) {
   }
 
   const animeId = firstResult.id;
+
+  // STEP 2: Fetch episodes list to get the exact ID for the episode
+  const episodesApiUrl = `https://api.anime.nexus/api/anime/details/episodes?id=${animeId}&page=1&perPage=24&order=asc&fillers=true&recaps=true`;
+  const episodesRes = await fetch(episodesApiUrl, { headers });
+  const episodesData = await episodesRes.json();
+
+  // ==========================================
+  // IF A SPECIFIC EPISODE WAS REQUESTED
+  // ==========================================
+  if (targetEp) {
+    // Find the episode number in the list
+    const epMatch = (episodesData.data || []).find(e => String(e.number) === String(targetEp));
+
+    if (!epMatch) {
+      return { success: false, error: `Episode ${targetEp} not found for this show.` };
+    }
+
+    // Fetch the stream data using the correct Episode UUID
+    const streamApiUrl = `https://api.anime.nexus/api/anime/details/episode/stream?id=${epMatch.id}&fillers=true&recaps=true`;
+    const streamRes = await fetch(streamApiUrl, { headers });
+
+    if (!streamRes.ok) {
+      return { success: false, error: `Stream API blocked the request or failed. HTTP ${streamRes.status}` };
+    }
+
+    const streamJson = await streamRes.json();
+
+    // RETURN THE RAW STREAM JSON DIRECTLY! 
+    return streamJson; 
+  }
+
+  // ==========================================
+  // IF NO EPISODE WAS REQUESTED (Return normal show data)
+  // ==========================================
   const animeSlug = firstResult.slug;
   const targetUrl = `https://anime.nexus/series/${animeId}/${animeSlug}`;
 
-  // STEP 2: Scrape series page for the logo
+  // Scrape series page for the logo
   let originalLogoPng = null;
   try {
     const pageRes = await fetch(targetUrl, { headers: { ...headers, Accept: 'text/html' } });
@@ -71,66 +105,16 @@ async function scrapeAnime(searchQuery, targetEp) {
         originalLogoPng = Buffer.from(base64String, 'base64').toString('utf-8');
       }
     }
-  } catch (_) {
-    // Logo scraping is non-critical — continue without it
-  }
+  } catch (_) { }
 
-  // STEP 3: Fetch episodes list
-  const episodesApiUrl = `https://api.anime.nexus/api/anime/details/episodes?id=${animeId}&page=1&perPage=24&order=asc&fillers=true&recaps=true`;
-  const episodesRes = await fetch(episodesApiUrl, { headers });
-  const episodesData = await episodesRes.json();
-
-  let targetEpisodeId = null;
-
-  const episodes = (episodesData.data || []).map(ep => {
-    // If the user requested a specific episode, grab its UUID
-    if (targetEp && String(ep.number) === String(targetEp)) {
-      targetEpisodeId = ep.id;
-    }
-
-    return {
-      id: ep.id,
-      number: ep.number,
-      title: ep.title,
-      thumbnail: ep.image?.resized?.['1920x1080']
-        ? `https://anime.delivery${ep.image.resized['1920x1080']}`
-        : null,
-      stream: null // Default to null
-    };
-  });
-
-  // STEP 4: Fetch Stream ONLY for the requested episode
-  let streamInfo = null;
-  if (targetEpisodeId) {
-    try {
-      const streamApiUrl = `https://api.anime.nexus/api/anime/details/episode/stream?id=${targetEpisodeId}&fillers=true&recaps=true`;
-      const streamRes = await fetch(streamApiUrl, { headers });
-      if (streamRes.ok) {
-        const streamJson = await streamRes.json();
-        const sData = streamJson.data;
-
-        if (sData) {
-          streamInfo = {
-            hls: sData.hls || null,
-            subtitles: sData.subtitles || [],
-            audio_languages: sData.video_meta?.audio_languages || [],
-            qualities: sData.video_meta?.qualities || {},
-            thumbnails: sData.thumbnails || null
-          };
-        }
-      }
-    } catch (err) {
-      // Ignore stream fetch failure
-    }
-  }
-
-  // Inject the stream info ONLY into the requested episode object
-  if (streamInfo) {
-    const epIndex = episodes.findIndex(e => String(e.number) === String(targetEp));
-    if (epIndex !== -1) {
-      episodes[epIndex].stream = streamInfo;
-    }
-  }
+  const episodes = (episodesData.data || []).map(ep => ({
+    id: ep.id,
+    number: ep.number,
+    title: ep.title,
+    thumbnail: ep.image?.resized?.['1920x1080']
+      ? `https://anime.delivery${ep.image.resized['1920x1080']}`
+      : null,
+  }));
 
   return {
     success: true,
