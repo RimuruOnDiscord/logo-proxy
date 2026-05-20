@@ -1,4 +1,30 @@
 // api/anime.js — Vercel Serverless Function
+import { Redis } from '@upstash/redis';
+
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_URL,
+  token: process.env.UPSTASH_REDIS_TOKEN,
+});
+
+async function getCookieString() {
+  const cached = await redis.get('anime_nexus_cookies');
+  if (!cached) throw new Error('No cookies in cache — refresh service may be down');
+  const cookies = typeof cached === 'string' ? JSON.parse(cached) : cached;
+  return cookies.map(c => `${c.name}=${c.value}`).join('; ');
+}
+
+async function triggerRefresh() {
+  try {
+    await fetch(`${process.env.RAILWAY_URL}/refresh`, {
+      method: 'POST',
+      headers: { 'x-refresh-secret': process.env.REFRESH_SECRET }
+    });
+    // Give Railway time to finish
+    await new Promise(r => setTimeout(r, 10000));
+  } catch (err) {
+    console.error('Failed to trigger refresh:', err.message);
+  }
+}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -24,10 +50,8 @@ export default async function handler(req, res) {
 async function scrapeAnime(searchQuery, targetEp) {
   const randomIP = `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
 
-  const COOKIES = [
-    'application_viewable=eyJpdiI6Im9iL3pYTmVtUDFvWGRPVVN1UGlHb1E9PSIsInZhbHVlIjoiNFBMeDNBWlA3TmJCblFBc0dXems3TU5vczVKNmM2MkluRm94NnNsa00raDVrZWxsMjJSQUtPOFdJQ1NOVVRsdm14SDhwVTBYdFh2enJ1Z0NiT2s2VnZMcjZNaTVXWFJRWk1IbjFaeW90NWZXMmRQS1ZnekFOc0g4Z1psdTBKUG1RODMraGNXam5zZi9FWVMxRFpFVk1VNkN1Q3Njc05UY21Yaysyc1NCdGhVPSIsIm1hYyI6IjRjMzdiNGFkNmE3Y2JkODdiNzIwYzliYTlkYjgyZWQxOGZkM2ExZmM3NmY2MjQwOTcwZGVmOTU2MmExN2I3NDciLCJ0YWciOiIifQ%3D%3D',
-    'anime_nexus_session=eyJpdiI6InZtRzJnNmUyMWVuSy9nWTRyZUFtMUE9PSIsInZhbHVlIjoidmRyNFlKNXNhd0lMNmZaMEVXSllEYklISWpNK0hueUhoZXV1RTdzTFdjU3R6RmpXS1VxclZJNFJwYkFGRDVzQWN5aEZaM3VmWXp0bXhxNG1HZ0I4aFZRWlFwMWdpdEIxRk1LR1hZNFpsOW5qUG9obGZFMVJtRmU4Wjgxd2l6ODAiLCJtYWMiOiJhMzExYzdhZGQ0ODhmYmM2YTE5YjUzY2RmNDY2ZmM2ZGJlM2U1MTM4MGVmZWYyOTY1ZDdlZGUwNmNjY2FjODU3IiwidGFnIjoiIn0%3D'
-  ].join('; ');
+  // Fetch cookies dynamically from Redis
+  let COOKIES = await getCookieString();
 
   const baseHeaders = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -76,14 +100,23 @@ async function scrapeAnime(searchQuery, targetEp) {
       ...baseHeaders,
       'Accept': 'application/json, text/plain, */*',
       'Accept-Encoding': 'gzip, deflate, br',
-      'Referer': episodePageUrl,        // 👈 episode-specific referer
+      'Referer': episodePageUrl,
       'Sec-Fetch-Dest': 'empty',
       'Sec-Fetch-Mode': 'cors',
       'Sec-Fetch-Site': 'same-site',
       'Connection': 'keep-alive',
     };
 
-    const streamRes = await fetch(streamApiUrl, { headers: streamHeaders });
+    let streamRes = await fetch(streamApiUrl, { headers: streamHeaders });
+
+    // If 403, trigger emergency cookie refresh and retry once
+    if (streamRes.status === 403) {
+      console.log('Got 403 — triggering emergency cookie refresh...');
+      await triggerRefresh();
+      COOKIES = await getCookieString();
+      streamHeaders['Cookie'] = COOKIES;
+      streamRes = await fetch(streamApiUrl, { headers: streamHeaders });
+    }
 
     if (!streamRes.ok) {
       return { success: false, error: `Stream fetch failed. HTTP ${streamRes.status}` };
