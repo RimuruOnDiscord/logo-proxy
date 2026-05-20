@@ -9,7 +9,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-  // Now accepts an optional "ep" parameter (e.g., ?q=naruto&ep=1)
+  // Accepts 'q' (Show name) and an optional 'ep' (Episode number)
   const { q, ep } = req.query; 
   if (!q || !q.trim()) {
     return res.status(400).json({ success: false, error: 'Missing search query. Use ?q=your+anime' });
@@ -34,7 +34,18 @@ async function scrapeAnime(searchQuery, targetEp) {
   const searchRes = await fetch(searchApiUrl, { headers });
   if (!searchRes.ok) throw new Error(`Search API responded with ${searchRes.status}`);
   const searchData = await searchRes.json();
-  const firstResult = searchData?.data?.[0];
+  
+  let firstResult = searchData?.data?.[0];
+
+  // Try to find an exact title match first so you don't get spin-offs by accident
+  if (searchData?.data?.length > 0) {
+    const exactMatch = searchData.data.find(
+      (show) => show.name.toLowerCase() === searchQuery.toLowerCase()
+    );
+    if (exactMatch) {
+      firstResult = exactMatch;
+    }
+  }
 
   if (!firstResult) {
     return { success: false, error: `No anime found for: "${searchQuery}"` };
@@ -61,7 +72,7 @@ async function scrapeAnime(searchQuery, targetEp) {
       }
     }
   } catch (_) {
-    // Logo scraping is non-critical
+    // Logo scraping is non-critical — continue without it
   }
 
   // STEP 3: Fetch episodes list
@@ -72,7 +83,7 @@ async function scrapeAnime(searchQuery, targetEp) {
   let targetEpisodeId = null;
 
   const episodes = (episodesData.data || []).map(ep => {
-    // If the user requested a specific episode, grab its ID
+    // If the user requested a specific episode, grab its UUID
     if (targetEp && String(ep.number) === String(targetEp)) {
       targetEpisodeId = ep.id;
     }
