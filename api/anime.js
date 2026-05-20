@@ -23,17 +23,27 @@ export default async function handler(req, res) {
 }
 
 async function scrapeAnime(searchQuery, targetEp) {
-  // Ultra-realistic browser headers to bypass 403 Forbidden blocks
+  const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+  // 1. Fetch homepage to steal a Session Cookie to bypass the 403 Forbidden error
+  let cookieHeader = '';
+  try {
+    const initRes = await fetch('https://anime.nexus/', { headers: { 'User-Agent': userAgent } });
+    const setCookie = initRes.headers.get('set-cookie');
+    if (setCookie) {
+      // Format the cookies correctly for our next request
+      cookieHeader = setCookie.split(/, (?=[a-zA-Z0-9_-]+\=)/).join('; ');
+    }
+  } catch (e) {
+    // Ignore cookie errors
+  }
+
   const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'User-Agent': userAgent,
     'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.9',
     'Origin': 'https://anime.nexus',
     'Referer': 'https://anime.nexus/',
-    'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-site',
-    'Connection': 'keep-alive'
+    'Cookie': cookieHeader // Injecting the stolen cookie here!
   };
 
   // STEP 1: Search for the anime show
@@ -52,9 +62,7 @@ async function scrapeAnime(searchQuery, targetEp) {
     if (exactMatch) firstResult = exactMatch;
   }
 
-  if (!firstResult) {
-    return { success: false, error: `No anime found for: "${searchQuery}"` };
-  }
+  if (!firstResult) return { success: false, error: `No anime found for: "${searchQuery}"` };
 
   const animeId = firstResult.id;
   const animeSlug = firstResult.slug;
@@ -70,28 +78,23 @@ async function scrapeAnime(searchQuery, targetEp) {
   if (targetEp) {
     const epMatch = (episodesData.data || []).find(e => String(e.number) === String(targetEp));
 
-    if (!epMatch) {
-      return { success: false, error: `Episode ${targetEp} not found for this show.` };
-    }
+    if (!epMatch) return { success: false, error: `Episode ${targetEp} not found for this show.` };
 
-    // Pass the EXACT URL the user would be on as the Referer
+    // Fetch the raw stream JSON using the correct URL and Cookie
     const exactReferer = `https://anime.nexus/series/${animeId}/${animeSlug}`;
-    
-    // Fetch the stream data using the correct Episode UUID
     const streamApiUrl = `https://api.anime.nexus/api/anime/details/episode/stream?id=${epMatch.id}&fillers=true&recaps=true`;
     
     const streamRes = await fetch(streamApiUrl, { 
-      headers: {
-        ...headers,
-        'Referer': exactReferer
-      } 
+      headers: { ...headers, 'Referer': exactReferer } 
     });
 
     if (!streamRes.ok) {
-      return { success: false, error: `Stream API blocked the request. HTTP ${streamRes.status}` };
+      return { success: false, error: `Stream API blocked the request (HTTP ${streamRes.status}). Vercel IP might be banned by Cloudflare.` };
     }
 
     const streamJson = await streamRes.json();
+
+    // THIS IS WHAT YOU WANT: It directly returns the exact raw JSON block containing "hls"
     return streamJson; 
   }
 
@@ -120,24 +123,15 @@ async function scrapeAnime(searchQuery, targetEp) {
     id: ep.id,
     number: ep.number,
     title: ep.title,
-    thumbnail: ep.image?.resized?.['1920x1080']
-      ? `https://anime.delivery${ep.image.resized['1920x1080']}`
-      : null,
+    thumbnail: ep.image?.resized?.['1920x1080'] ? `https://anime.delivery${ep.image.resized['1920x1080']}` : null,
   }));
 
   return {
     success: true,
-    anime: {
-      id: animeId,
-      slug: animeSlug,
-      name: firstResult.name,
-      url: targetUrl,
-    },
+    anime: { id: animeId, slug: animeSlug, name: firstResult.name, url: targetUrl },
     art: {
       logo: originalLogoPng,
-      poster: firstResult.poster?.resized?.['1560x2340']
-        ? `https://anime.delivery${firstResult.poster.resized['1560x2340']}`
-        : null,
+      poster: firstResult.poster?.resized?.['1560x2340'] ? `https://anime.delivery${firstResult.poster.resized['1560x2340']}` : null,
     },
     total_episodes_found: episodes.length,
     episodes,
