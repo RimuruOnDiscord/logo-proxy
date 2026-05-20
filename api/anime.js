@@ -23,12 +23,17 @@ export default async function handler(req, res) {
 }
 
 async function scrapeAnime(searchQuery, targetEp) {
-  // Added 'Referer' header. Anime Nexus often blocks stream fetches without it!
+  // Ultra-realistic browser headers to bypass 403 Forbidden blocks
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'application/json',
-    'Referer': 'https://anime.nexus/', 
-    'Origin': 'https://anime.nexus'
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Origin': 'https://anime.nexus',
+    'Referer': 'https://anime.nexus/',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-site',
+    'Connection': 'keep-alive'
   };
 
   // STEP 1: Search for the anime show
@@ -52,6 +57,7 @@ async function scrapeAnime(searchQuery, targetEp) {
   }
 
   const animeId = firstResult.id;
+  const animeSlug = firstResult.slug;
 
   // STEP 2: Fetch episodes list to get the exact ID for the episode
   const episodesApiUrl = `https://api.anime.nexus/api/anime/details/episodes?id=${animeId}&page=1&perPage=24&order=asc&fillers=true&recaps=true`;
@@ -62,34 +68,37 @@ async function scrapeAnime(searchQuery, targetEp) {
   // IF A SPECIFIC EPISODE WAS REQUESTED
   // ==========================================
   if (targetEp) {
-    // Find the episode number in the list
     const epMatch = (episodesData.data || []).find(e => String(e.number) === String(targetEp));
 
     if (!epMatch) {
       return { success: false, error: `Episode ${targetEp} not found for this show.` };
     }
 
+    // Pass the EXACT URL the user would be on as the Referer
+    const exactReferer = `https://anime.nexus/series/${animeId}/${animeSlug}`;
+    
     // Fetch the stream data using the correct Episode UUID
     const streamApiUrl = `https://api.anime.nexus/api/anime/details/episode/stream?id=${epMatch.id}&fillers=true&recaps=true`;
-    const streamRes = await fetch(streamApiUrl, { headers });
+    
+    const streamRes = await fetch(streamApiUrl, { 
+      headers: {
+        ...headers,
+        'Referer': exactReferer
+      } 
+    });
 
     if (!streamRes.ok) {
-      return { success: false, error: `Stream API blocked the request or failed. HTTP ${streamRes.status}` };
+      return { success: false, error: `Stream API blocked the request. HTTP ${streamRes.status}` };
     }
 
     const streamJson = await streamRes.json();
-
-    // RETURN THE RAW STREAM JSON DIRECTLY! 
     return streamJson; 
   }
 
   // ==========================================
   // IF NO EPISODE WAS REQUESTED (Return normal show data)
   // ==========================================
-  const animeSlug = firstResult.slug;
   const targetUrl = `https://anime.nexus/series/${animeId}/${animeSlug}`;
-
-  // Scrape series page for the logo
   let originalLogoPng = null;
   try {
     const pageRes = await fetch(targetUrl, { headers: { ...headers, Accept: 'text/html' } });
