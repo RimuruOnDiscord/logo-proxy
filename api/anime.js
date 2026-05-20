@@ -23,27 +23,14 @@ export default async function handler(req, res) {
 }
 
 async function scrapeAnime(searchQuery, targetEp) {
-  const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
-  // 1. Fetch homepage to steal a Session Cookie to bypass the 403 Forbidden error
-  let cookieHeader = '';
-  try {
-    const initRes = await fetch('https://anime.nexus/', { headers: { 'User-Agent': userAgent } });
-    const setCookie = initRes.headers.get('set-cookie');
-    if (setCookie) {
-      // Format the cookies correctly for our next request
-      cookieHeader = setCookie.split(/, (?=[a-zA-Z0-9_-]+\=)/).join('; ');
-    }
-  } catch (e) {
-    // Ignore cookie errors
-  }
+  // Spoof a random IP address so Cloudflare doesn't immediately flag Vercel
+  const randomIP = `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
 
   const headers = {
-    'User-Agent': userAgent,
-    'Accept': 'application/json, text/plain, */*',
-    'Origin': 'https://anime.nexus',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json',
     'Referer': 'https://anime.nexus/',
-    'Cookie': cookieHeader // Injecting the stolen cookie here!
+    'X-Forwarded-For': randomIP
   };
 
   // STEP 1: Search for the anime show
@@ -54,7 +41,6 @@ async function scrapeAnime(searchQuery, targetEp) {
   
   let firstResult = searchData?.data?.[0];
 
-  // Try to find an exact title match first
   if (searchData?.data?.length > 0) {
     const exactMatch = searchData.data.find(
       (show) => show.name.toLowerCase() === searchQuery.toLowerCase()
@@ -80,21 +66,18 @@ async function scrapeAnime(searchQuery, targetEp) {
 
     if (!epMatch) return { success: false, error: `Episode ${targetEp} not found for this show.` };
 
-    // Fetch the raw stream JSON using the correct URL and Cookie
-    const exactReferer = `https://anime.nexus/series/${animeId}/${animeSlug}`;
+    // Fetch the EXACT raw stream JSON!
     const streamApiUrl = `https://api.anime.nexus/api/anime/details/episode/stream?id=${epMatch.id}&fillers=true&recaps=true`;
     
-    const streamRes = await fetch(streamApiUrl, { 
-      headers: { ...headers, 'Referer': exactReferer } 
-    });
+    const streamRes = await fetch(streamApiUrl, { headers });
 
     if (!streamRes.ok) {
-      return { success: false, error: `Stream API blocked the request (HTTP ${streamRes.status}). Vercel IP might be banned by Cloudflare.` };
+      return { success: false, error: `Anime Nexus blocked Vercel from getting the JSON. HTTP ${streamRes.status}` };
     }
 
     const streamJson = await streamRes.json();
 
-    // THIS IS WHAT YOU WANT: It directly returns the exact raw JSON block containing "hls"
+    // RETURN THE RAW JSON DIRECTLY
     return streamJson; 
   }
 
@@ -129,10 +112,7 @@ async function scrapeAnime(searchQuery, targetEp) {
   return {
     success: true,
     anime: { id: animeId, slug: animeSlug, name: firstResult.name, url: targetUrl },
-    art: {
-      logo: originalLogoPng,
-      poster: firstResult.poster?.resized?.['1560x2340'] ? `https://anime.delivery${firstResult.poster.resized['1560x2340']}` : null,
-    },
+    art: { logo: originalLogoPng, poster: firstResult.poster?.resized?.['1560x2340'] ? `https://anime.delivery${firstResult.poster.resized['1560x2340']}` : null },
     total_episodes_found: episodes.length,
     episodes,
   };
