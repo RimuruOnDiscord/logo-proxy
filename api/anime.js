@@ -6,24 +6,52 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_TOKEN,
 });
 
-async function getCookieString() {
-  const cached = await redis.get('anime_nexus_cookies');
-  if (!cached) throw new Error('No cookies in cache — refresh service may be down');
-  const cookies = typeof cached === 'string' ? JSON.parse(cached) : cached;
-  return cookies.map(c => `${c.name}=${c.value}`).join('; ');
+// Global in-memory cache to bypass Redis on warm starts
+let cachedCookieString = null;
+let cachedCookieRaw = null;
+
+async function getCookieString(forceRefresh = false) {
+  if (!cachedCookieString || forceRefresh) {
+    const cached = await redis.get('anime_nexus_cookies');
+    if (!cached) throw new Error('No cookies in cache — refresh service may be down');
+    
+    cachedCookieRaw = typeof cached === 'string' ? cached : JSON.stringify(cached);
+    const cookies = typeof cached === 'string' ? JSON.parse(cached) : cached;
+    cachedCookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+  }
+  return cachedCookieString;
 }
 
-async function triggerRefresh() {
+// Triggers refresh and polls Redis instead of waiting a flat 10 seconds
+async function triggerRefreshAndGetNewCookies() {
   try {
     await fetch(`${process.env.RAILWAY_URL}/refresh`, {
       method: 'POST',
       headers: { 'x-refresh-secret': process.env.REFRESH_SECRET }
     });
-    // Give Railway time to finish
-    await new Promise(r => setTimeout(r, 10000));
+
+    const oldRaw = cachedCookieRaw;
+    
+    // Poll Redis every 500ms for up to 5 seconds to see if cookies updated
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      const cached = await redis.get('anime_nexus_cookies');
+      if (cached) {
+        const currentRaw = typeof cached === 'string' ? cached : JSON.stringify(cached);
+        if (currentRaw !== oldRaw) {
+          const cookies = typeof cached === 'string' ? JSON.parse(cached) : cached;
+          cachedCookieRaw = currentRaw;
+          cachedCookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+          return cachedCookieString;
+        }
+      }
+    }
   } catch (err) {
     console.error('Failed to trigger refresh:', err.message);
   }
+
+  // Fallback to whatever is currently in Redis if polling times out
+  return getCookieString(true);
 }
 
 export default async function handler(req, res) {
@@ -50,7 +78,7 @@ export default async function handler(req, res) {
 async function scrapeAnime(searchQuery, targetEp) {
   const randomIP = `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
 
-  // Fetch cookies dynamically from Redis
+  // Fetches from in-memory cache on warm starts (0ms)
   let COOKIES = await getCookieString();
 
   const baseHeaders = {
@@ -81,15 +109,14 @@ async function scrapeAnime(searchQuery, targetEp) {
   const animeId = firstResult.id;
   const animeSlug = firstResult.slug;
 
-  // STEP 2: Fetch episodes
-  const episodesApiUrl = `https://api.anime.nexus/api/anime/details/episodes?id=${animeId}&page=1&perPage=24&order=asc&fillers=true&recaps=true`;
-  const episodesRes = await fetch(episodesApiUrl, { headers: baseHeaders });
-  const episodesData = await episodesRes.json();
-
   // ==========================================
   // IF A SPECIFIC EPISODE WAS REQUESTED
   // ==========================================
   if (targetEp) {
+    const episodesApiUrl = `https://api.anime.nexus/api/anime/details/episodes?id=${animeId}&page=1&perPage=24&order=asc&fillers=true&recaps=true`;
+    const episodesRes = await fetch(episodesApiUrl, { headers: baseHeaders });
+    const episodesData = await episodesRes.json();
+
     const epMatch = (episodesData.data || []).find(e => String(e.number) === String(targetEp));
     if (!epMatch) return { success: false, error: `Episode ${targetEp} not found for this show.` };
 
@@ -109,11 +136,10 @@ async function scrapeAnime(searchQuery, targetEp) {
 
     let streamRes = await fetch(streamApiUrl, { headers: streamHeaders });
 
-    // If 403, trigger emergency cookie refresh and retry once
+    // If 403, trigger cookie refresh, update local variables, and retry once
     if (streamRes.status === 403) {
       console.log('Got 403 — triggering emergency cookie refresh...');
-      await triggerRefresh();
-      COOKIES = await getCookieString();
+      COOKIES = await triggerRefreshAndGetNewCookies();
       streamHeaders['Cookie'] = COOKIES;
       streamRes = await fetch(streamApiUrl, { headers: streamHeaders });
     }
@@ -122,30 +148,37 @@ async function scrapeAnime(searchQuery, targetEp) {
       return { success: false, error: `Stream fetch failed. HTTP ${streamRes.status}` };
     }
 
-    const streamJson = await streamRes.json();
-    return streamJson;
+    return await streamRes.json();
   }
 
   // ==========================================
   // NO EPISODE REQUESTED — Return show data
   // ==========================================
+  const episodesApiUrl = `https://api.anime.nexus/api/anime/details/episodes?id=${animeId}&page=1&perPage=24&order=asc&fillers=true&recaps=true`;
   const targetUrl = `https://anime.nexus/series/${animeId}/${animeSlug}`;
+
+  // Run the episode fetch and HTML scrape concurrently
+  const [episodesData, html] = await Promise.all([
+    fetch(episodesApiUrl, { headers: baseHeaders }).then(r => r.json()).catch(() => ({ data: [] })),
+    fetch(targetUrl, { headers: { ...baseHeaders, Accept: 'text/html' } }).then(r => r.text()).catch(() => null)
+  ]);
+
   let originalLogoPng = null;
-  try {
-    const pageRes = await fetch(targetUrl, { headers: { ...baseHeaders, Accept: 'text/html' } });
-    const html = await pageRes.text();
-    const logoRegex = /logo:\$R\[\d+\]=\{resized:\$R\[\d+\]=\{large:"([^"]+)"/;
-    const match = html.match(logoRegex);
-    if (match && match[1]) {
-      const cdnPath = match[1];
-      const base64Marker = 'aHR0cHM6';
-      const markerIndex = cdnPath.indexOf(base64Marker);
-      if (markerIndex !== -1) {
-        const base64String = cdnPath.substring(markerIndex).replace(/\.[a-z0-9]+$/i, '').replace(/\//g, '');
-        originalLogoPng = Buffer.from(base64String, 'base64').toString('utf-8');
+  if (html) {
+    try {
+      const logoRegex = /logo:\$R\[\d+\]=\{resized:\$R\[\d+\]=\{large:"([^"]+)"/;
+      const match = html.match(logoRegex);
+      if (match && match[1]) {
+        const cdnPath = match[1];
+        const base64Marker = 'aHR0cHM6';
+        const markerIndex = cdnPath.indexOf(base64Marker);
+        if (markerIndex !== -1) {
+          const base64String = cdnPath.substring(markerIndex).replace(/\.[a-z0-9]+$/i, '').replace(/\//g, '');
+          originalLogoPng = Buffer.from(base64String, 'base64').toString('utf-8');
+        }
       }
-    }
-  } catch (_) {}
+    } catch (_) {}
+  }
 
   const episodes = (episodesData.data || []).map(ep => ({
     id: ep.id,
